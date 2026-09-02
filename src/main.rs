@@ -54,7 +54,8 @@ async fn main() {
     
     let mut buffer1: Vec<u8> = Vec::new();
     let mut index_buffer: Vec<u8> = Vec::new();
- 
+
+    //task running in bg to recieve logs from the queue and send them to produce in batches of 100
     tokio::spawn(async move {
         loop {
             let mut batch_count = 0;
@@ -84,8 +85,6 @@ async fn main() {
                     batch_count += 1;
 
                     
-
-                    
                 }else{
                     break;
                 }
@@ -100,99 +99,39 @@ async fn main() {
         let ws_stream = accept_async(stream)
             .await
             .expect("handshake failed");
-
         let (_, mut read) = ws_stream.split();
 
-                  
-
+        //reading the logs incoming from the websocket
         let read_task = async {
             while let Some(message) = read.next().await {
                 let message = message.expect("failed to unwrap message");
-            
                 if let Message::Text(text) = message {
                     let log = Log {
                         log: text.to_string(),
                     };
-
-                    Arc::clone(&shared_state).lock().await.queue.send(log).await.expect("failed to send log to the queue");
-            
-                    
+                    //sending the logs into the queue
+                    Arc::clone(&shared_state).lock().await.queue.send(log).await.expect("failed to send log to the queue");                 
                 }
             }
         };
-
         read_task.await;
     }
 
     // appending_into_the_log(log, shared_state);
 }
 
+//writing to the files
 pub fn produce2(buffer: Vec<u8>, index_buffer: Vec<u8>, shared_state: Arc<Mutex<AppState>>) -> () {
     let mut state = shared_state.blocking_lock();
-
     state.log_file
         .write_all(&buffer)
         .expect("failed to write log batch");
-
     state.index_file
         .write_all(&index_buffer)
         .expect("failed to write index batch");
 }
 
-pub fn produce(
-    log: Log,
-    shared_state: Arc<Mutex<AppState>>,
-) {
-    // serialize the log
-    let serialized_log = bincode::serde::encode_to_vec(&log, bincode::config::standard()).unwrap();
-
-    let mut state = shared_state.blocking_lock();
-
-    let position = state.log_file.stream_position().expect("failed to stream position of the file");
-
-    let len = (serialized_log.len() as u64).to_le_bytes();
-
-    let offset = state.offset.to_le_bytes();
-
-    let offset_int: u64 = u64::from_le_bytes(state.offset.to_le_bytes());  
-
-
-
-    // write the offset
-    state.log_file
-        .write_all(&offset)
-        .expect("failed to write offset to the file");
-
-    // write the log len
-    state.log_file
-        .write_all(&len)
-        .expect("failed to write offset to the file");
-    
-    // write the log into the file
-    state.log_file
-        .write_all(&serialized_log)
-        .expect("failed to write into file");
-
-
-    //write offset into index file for every 100 logs
-    if offset_int % 100 == 0 {
-        state.index_file
-            .write_all(&offset)
-            .expect("failed to write offset to the file"); 
-
-        //write position into index file
-        state.index_file
-            .write_all(&position.to_le_bytes())
-            .expect("failed to write index to the index file");
-
-    }
-
-    // update offset
-    state.offset += 1;
-}
-
-
-
+//TO BE WORKED UPON 
 pub fn consume(offset: u64, shared_state: Arc<Mutex<AppState>>) -> Option<String>{
     let mut state = shared_state.blocking_lock();
     //need to go from 100 to 157
@@ -220,6 +159,7 @@ pub fn consume(offset: u64, shared_state: Arc<Mutex<AppState>>) -> Option<String
     ).unwrap();
     Some(log.log)
 }
+
 
 //gives position of 100
 pub fn find_position(index_file: &mut File, target_offset: u64) -> Option<u64> {
