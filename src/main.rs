@@ -1,16 +1,20 @@
+// the task ends after processing just one batch 😭 ✅ done
+//either you have the vector to contain each log's len and offset along with its serialized self or you seperate each serialized log ✅ done
+//implement log count ✅ done
 use std::fs::File;
 use std::io::{Seek, Write};
+use std::mem::take;
 use std::sync::Arc;
-
+use tokio::sync::mpsc;
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use std::io::{Read, SeekFrom};
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Log {
     pub log: String,
 }
@@ -18,29 +22,77 @@ pub struct Log {
 pub struct AppState {
     pub offset: u64,
     pub log_file: File,
-    pub index_file: File
+    pub index_file: File,
+    pub queue: mpsc::Sender<Log>
 }
 
 #[tokio::main]
 async fn main() {
     println!("Hello, world!");
-
+    
     let log_file = File::create("log_file")
         .expect("failed to create the file");
-
+    
     let index_file = File::create("index_file")
         .expect("failed to create the file");
-
+    let (tx, mut rx) = mpsc::channel(100);
     let shared_state = Arc::new(Mutex::new(AppState {
         offset: 0,
         log_file,
-        index_file
+        index_file,
+        queue: tx.clone()
     }));
 
     // listener for TCP stream
     let listener = TcpListener::bind("127.0.0.1:8080")
         .await
         .unwrap();
+
+    let writer_state = Arc::clone(&shared_state);
+
+
+    
+    let mut buffer1: Vec<u8> = Vec::new();
+    let mut index_buffer: Vec<u8> = Vec::new();
+ 
+    tokio::spawn(async move {
+        loop {
+            let mut batch_count = 0;
+            let state_for_write = Arc::clone(&writer_state);
+            while batch_count <= 100 {
+                if let Some(log) = rx.recv().await {
+                    let serialized_log = bincode::serde::encode_to_vec(&log, bincode::config::standard()).unwrap();
+
+                    let mut state = writer_state.blocking_lock();
+
+                    let position = state.log_file.stream_position().expect("failed to stream position of the file").to_le_bytes();
+
+                    let len = (serialized_log.len() as u64).to_le_bytes();
+
+                    state.offset = state.offset + 1;
+
+                    let offset = state.offset.to_le_bytes();
+
+                    // [offset][length][payload]
+                    buffer1.extend_from_slice(&offset);
+                    buffer1.extend_from_slice(&len);
+                    buffer1.extend_from_slice(&serialized_log);
+
+                    index_buffer.extend_from_slice(&offset);
+                    index_buffer.extend_from_slice(&position);
+
+                    batch_count += 1;
+
+                    
+
+                    
+                }else{
+                    break;
+                }
+            }
+            produce2(take(&mut buffer1), take(&mut index_buffer),  state_for_write);
+        }
+    }).await.unwrap();  
 
     // accepts connection request
     while let Ok((stream, _)) = listener.accept().await {
@@ -51,6 +103,8 @@ async fn main() {
 
         let (_, mut read) = ws_stream.split();
 
+                  
+
         let read_task = async {
             while let Some(message) = read.next().await {
                 let message = message.expect("failed to unwrap message");
@@ -59,8 +113,10 @@ async fn main() {
                     let log = Log {
                         log: text.to_string(),
                     };
+
+                    Arc::clone(&shared_state).lock().await.queue.send(log).await.expect("failed to send log to the queue");
             
-                    produce(log, Arc::clone(&shared_state));
+                    
                 }
             }
         };
@@ -71,25 +127,36 @@ async fn main() {
     // appending_into_the_log(log, shared_state);
 }
 
+pub fn produce2(buffer: Vec<u8>, index_buffer: Vec<u8>, shared_state: Arc<Mutex<AppState>>) -> () {
+    let mut state = shared_state.blocking_lock();
+
+    state.log_file
+        .write_all(&buffer)
+        .expect("failed to write log batch");
+
+    state.index_file
+        .write_all(&index_buffer)
+        .expect("failed to write index batch");
+}
+
 pub fn produce(
     log: Log,
     shared_state: Arc<Mutex<AppState>>,
 ) {
     // serialize the log
-    let binding = serde_json::to_string(&log)
-        .expect("failed to serialize to JSON string");
-
-    let serialized_log = binding.as_bytes();
+    let serialized_log = bincode::serde::encode_to_vec(&log, bincode::config::standard()).unwrap();
 
     let mut state = shared_state.blocking_lock();
 
     let position = state.log_file.stream_position().expect("failed to stream position of the file");
 
-    let len = serde_json::to_string(&log).expect("failed to serialize log to string").len().to_le_bytes();
+    let len = (serialized_log.len() as u64).to_le_bytes();
 
     let offset = state.offset.to_le_bytes();
 
-    let offset_int: u64 = u64::from_le_bytes(state.offset.to_le_bytes());   
+    let offset_int: u64 = u64::from_le_bytes(state.offset.to_le_bytes());  
+
+
 
     // write the offset
     state.log_file
@@ -103,7 +170,7 @@ pub fn produce(
     
     // write the log into the file
     state.log_file
-        .write_all(serialized_log)
+        .write_all(&serialized_log)
         .expect("failed to write into file");
 
 
@@ -140,14 +207,18 @@ pub fn consume(offset: u64, shared_state: Arc<Mutex<AppState>>) -> Option<String
         state.log_file.read_exact(&mut log_bytes).ok().unwrap();
         remainder -= 1;
     }
-        let mut len_bytes = [0u8; 8];
-        state.log_file.read_exact(&mut len_bytes).ok().unwrap();
-        let len = u64::from_le_bytes(len_bytes);
-        let mut log_bytes = vec![0u8; len as usize];
-        state.log_file.read_exact(&mut log_bytes).ok().unwrap();
-    let log = String::from_utf8(log_bytes)
-        .expect("invalid UTF-8");
-    Some(log)
+    let mut len_bytes = [0u8; 8];
+    state.log_file.read_exact(&mut len_bytes).ok().unwrap();
+
+    let len = u64::from_le_bytes(len_bytes);
+
+    let mut log_bytes = vec![0u8; len as usize];
+    state.log_file.read_exact(&mut log_bytes).ok().unwrap();
+    let (log, _) = bincode::serde::decode_from_slice::<Log, _>(
+        &log_bytes,
+        bincode::config::standard()
+    ).unwrap();
+    Some(log.log)
 }
 
 //gives position of 100
@@ -211,42 +282,3 @@ pub fn find_position(index_file: &mut File, target_offset: u64) -> Option<u64> {
 
     Some(u64::from_le_bytes(position_bytes))
 }
-
-//set up producer-consumers up
-//focus on making it look like this: 
-/*
-WebSocket
-    ↓
-produce(message)
-    ↓
-Log Engine
-    ↓
-Segment
-    ↓
-File
- */
-
- //make it fast by using binary encoding instead of json serialization
-
- //using mutex can cause bottlenecks, eventually go ahead with 
-
- /*
-
-Producers
-   ↓
-queue
-   ↓
-single log writer
-   ↓
-batched sequential writes
-   ↓
-disk
-
-  */
-
-  //work on segments
-
-  //indexing the offset 
-
-
-  //for storing index-position, store only every 100 log messages
