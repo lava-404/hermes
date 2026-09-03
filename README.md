@@ -1,4 +1,4 @@
-# Mercury 
+# mercury: the messenger of gods
 
 A personal implementation of a **high-performance distributed append-only log / streaming platform in pure Rust**, inspired by Kafka.
 
