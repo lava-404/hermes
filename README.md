@@ -1,4 +1,4 @@
-# Mini Kafka in Rust
+# Mercury 
 
 A personal implementation of a **high-performance distributed append-only log / streaming platform in pure Rust**, inspired by Kafka.
 

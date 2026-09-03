@@ -79,8 +79,10 @@ async fn main() {
                     buffer1.extend_from_slice(&len);
                     buffer1.extend_from_slice(&serialized_log);
 
-                    index_buffer.extend_from_slice(&offset);
-                    index_buffer.extend_from_slice(&position);
+                    if state.offset % 100 == 0 {
+                        index_buffer.extend_from_slice(&offset);
+                        index_buffer.extend_from_slice(&position);
+                    }
 
                     batch_count += 1;
 
@@ -222,3 +224,9 @@ pub fn find_position(index_file: &mut File, target_offset: u64) -> Option<u64> {
 
     Some(u64::from_le_bytes(position_bytes))
 }
+
+
+//[offset][len][serialized_log]
+
+
+/*i have one doubt, now in my file, the logs get saved as:   [offset][len][serialized_log][offset][len][serialized_log][offset][len][serialized_log][offset][len][serialized_log][offset][len][serialized_log]. so when we are trying to find a log at a given offset, cant we directly look the offset up in the index file and the based on the previous multiple of 100 (because index file stores the logs in batch of 100s with positions, then calculate how far the position of the cursor is from the streaming position then read the len and send it back? */
