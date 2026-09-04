@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::mem::take;
+use std::os::macos::fs::MetadataExt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use futures_util::StreamExt;
@@ -12,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
-
+pub mod main2;
 use std::io::{Read, SeekFrom};
 #[derive(Serialize, Deserialize)]
 pub struct Log {
@@ -23,26 +24,27 @@ pub struct AppState {
     pub offset: u64,
     pub log_file: File,
     pub index_file: File,
-    pub queue: mpsc::Sender<Log>
+    pub queue: mpsc::Sender<Log>,
+    pub log_file_id: u64
 }
 
 #[tokio::main]
 async fn main() {
     println!("Hello, world!");
     
-    let log_file = File::create("log_file")
+    let log_file = File::create("log_file_0")
         .expect("failed to create the file");
     
-    let index_file = File::create("index_file")
+    let index_file = File::create("index_file_0")
         .expect("failed to create the file");
     let (tx, mut rx) = mpsc::channel(100);
     let shared_state = Arc::new(Mutex::new(AppState {
         offset: 0,
         log_file,
         index_file,
-        queue: tx.clone()
+        queue: tx.clone(),
+        log_file_id : 0
     }));
-
     // listener for TCP stream
     let listener = TcpListener::bind("127.0.0.1:8080")
         .await
@@ -125,12 +127,39 @@ async fn main() {
 //writing to the files
 pub fn produce2(buffer: Vec<u8>, index_buffer: Vec<u8>, shared_state: Arc<Mutex<AppState>>) -> () {
     let mut state = shared_state.blocking_lock();
-    state.log_file
+
+    //finding the disk storage taken by the index and log files
+    let meta = state.log_file.metadata().expect("failed to find metadat of log file");
+    let disk_bytes = meta.st_blocks() * 512; 
+
+
+
+    //if file size is less than 1 gb then continue adding buffer
+    if disk_bytes <  1_073_741_824 {
+        state.log_file
         .write_all(&buffer)
         .expect("failed to write log batch");
-    state.index_file
+
+        state.index_file
         .write_all(&index_buffer)
         .expect("failed to write index batch");
+    }
+    //if file size exceeds 
+    else {
+        state.log_file = File::create(format!("log_file_{}", state.log_file_id + 1)).expect("failed to create new log file");
+        state.index_file = File::create(format!("index_file_{}", state.log_file_id + 1)).expect("failed to create new index file");
+
+        state.log_file
+        .write_all(&buffer)
+        .expect("failed to write log batch");
+
+        state.index_file
+        .write_all(&index_buffer)
+        .expect("failed to write index batch");
+
+        state.log_file_id += 1;
+    }
+
 }
 
 //TO BE WORKED UPON 
