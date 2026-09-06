@@ -80,49 +80,40 @@ impl LogWriter {
   }
 
   fn consume(&mut self, offset: u64) -> Option<String> {
-    let (segment_index, position) =
-        find_position(&mut self.segments, offset)?;
+    let (segment_index, position, indexed_offset) =
+    find_position(&mut self.segments, offset)?;
 
     let segment = &mut self.segments[segment_index];
 
-    segment
-        .log_file
-        .seek(SeekFrom::Start(position))
-        .ok()?;
+    segment.log_file.seek(SeekFrom::Start(position)).ok()?;
 
-    let mut remainder = offset % 100;
+    let mut records_to_skip = offset - indexed_offset;
 
-    while remainder > 0 {
-        // Skip offset
+    while records_to_skip > 0 {
         let mut offset_bytes = [0u8; 8];
         segment.log_file.read_exact(&mut offset_bytes).ok()?;
 
-        // Read length
         let mut len_bytes = [0u8; 8];
         segment.log_file.read_exact(&mut len_bytes).ok()?;
 
         let len = u64::from_le_bytes(len_bytes);
 
-        // Skip serialized Log
         segment
             .log_file
             .seek(SeekFrom::Current(len as i64))
             .ok()?;
 
-        remainder -= 1;
+        records_to_skip -= 1;
     }
 
-    // Read target offset
     let mut offset_bytes = [0u8; 8];
     segment.log_file.read_exact(&mut offset_bytes).ok()?;
 
-    // Read target length
     let mut len_bytes = [0u8; 8];
     segment.log_file.read_exact(&mut len_bytes).ok()?;
 
     let len = u64::from_le_bytes(len_bytes);
 
-    // Read target serialized Log
     let mut log_bytes = vec![0u8; len as usize];
     segment.log_file.read_exact(&mut log_bytes).ok()?;
 
@@ -133,7 +124,7 @@ impl LogWriter {
         ).ok()?;
 
     Some(log.log)
-}
+    }
 }
 
 
@@ -153,8 +144,8 @@ async fn main() {
         .unwrap();
     let segment = Segment {
         seg_id: 0,
-        first_offset: 0,
-        last_offset: 0,
+        first_offset: 1,
+        last_offset: 1,
         log_file,
         index_file
     };
@@ -244,7 +235,7 @@ async fn main() {
 pub fn find_position(
     segments: &mut [Segment],
     target_offset: u64,
-) -> Option<(usize, u64)> {
+) -> Option<(usize, u64, u64)> {
     // find the segment containing the target offset
     let segment_index = segments
         .iter()
@@ -262,9 +253,14 @@ pub fn find_position(
     let file_size = segment.index_file.metadata().ok()?.len();
     let entry_count = file_size / entry_size;
 
-    let mut low = 0;
-    let mut high = entry_count;
+    // No index entries yet.
+    // The first log starts at position 0 and has offset 1.
+    if entry_count == 0 {
+        return Some((segment_index, 0, 1));
+    }
 
+    let mut low = 0;
+    let mut high: u64 = entry_count;
     // binary search for largest indexed offset <= target
     while low < high {
         let mid = (low + high) / 2;
@@ -290,7 +286,7 @@ pub fn find_position(
     }
 
     if low == 0 {
-        return None;
+        return Some((segment_index, 0, 1));
     }
 
     let index = low - 1;
@@ -306,8 +302,80 @@ pub fn find_position(
     segment.index_file.read_exact(&mut offset_bytes).ok()?;
     segment.index_file.read_exact(&mut position_bytes).ok()?;
 
+    let indexed_offset = u64::from_le_bytes(offset_bytes);
     let position = u64::from_le_bytes(position_bytes);
-
-    Some((segment_index, position))
+    
+    Some((segment_index, position, indexed_offset))
 }
 
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::OpenOptions;
+
+    #[test]
+    fn test_consume_first_log() {
+        let log_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("test_log_file")
+            .unwrap();
+
+        let index_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("test_index_file")
+            .unwrap();
+
+        let segment = Segment {
+            seg_id: 0,
+            first_offset: 1,
+            last_offset: 0,
+            log_file,
+            index_file,
+        };
+
+        let mut writer = LogWriter {
+            segments: vec![segment],
+            current_segment: 0,
+            log_batch: Vec::new(),
+            index_batch: Vec::new(),
+        };
+
+        // Create first log
+        let log = Log {
+            log: "hello world".to_string(),
+        };
+
+        let serialized =
+            bincode::serde::encode_to_vec(
+                &log,
+                bincode::config::standard()
+            ).unwrap();
+
+        let offset = 1u64.to_le_bytes();
+        let len = (serialized.len() as u64).to_le_bytes();
+
+        writer.log_batch.extend_from_slice(&offset);
+        writer.log_batch.extend_from_slice(&len);
+        writer.log_batch.extend_from_slice(&serialized);
+
+        writer.segments[0].last_offset = 1;
+
+        writer.append_batch();
+        writer.flush_batch();
+
+        let result = writer.consume(1);
+
+        assert_eq!(result, Some("hello world".to_string()));
+
+        std::fs::remove_file("test_log_file").unwrap();
+        std::fs::remove_file("test_index_file").unwrap();
+    }
+}

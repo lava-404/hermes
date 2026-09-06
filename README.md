@@ -1,152 +1,78 @@
 # mercury: the messenger of gods
 
-A personal implementation of a **high-performance distributed append-only log / streaming platform in pure Rust**, inspired by Kafka.
+A personal implementation of a **high-performance append-only log / streaming platform in pure Rust**, inspired by Kafka.
 
-This README is mainly a progress tracker and reminder of what has been implemented and what comes next.
+The goal is to understand how log storage, batching, indexing, segmentation, and eventually distributed streaming systems work under the hood.
 
----
-
-## September 2, 2026
-
-### Completed
-
-* ✅ Implemented **batch writing**
-* ✅ Implemented **producer-side queue** using `mpsc`
-* ⏳ Consumer-side reading is still remaining
-
----
 
 ## Architecture
 
-Current intended data path:
-
-```text
-WebSocket connections
-        ↓
-     produce()
-        ↓
-       Queue
-        ↓
-   Single Writer
-        ↓
-   Batch 100 logs
-        ↓
-      Segment
-        ↓
-   Sequential File Write
-        ↓
-       Disk
-```
-
-The goal is to keep the data path simple and fast:
-
-**Producers → Queue → Single Writer → Batched Sequential I/O → Disk**
 
 ---
 
-## Next To Do
-
-### 1. Consumer
-
-📮 Implement consumer-side reading of logs.
-
-Need to implement:
-
-* Read logs from the log file
-* Use the stored offset/index information
-* Properly separate individual records using `[offset][length][payload]`
-* Deserialize the payload
-* Return the requested log to the consumer
-
----
-
-### 2. Segments & Batch Management
-
-📮 Implement segments and basic batch management.
-
-Need to work on:
-
-* Segment creation
-* Segment rolling
-* Basic retention
-* Managing batches within segments
-* Coordinator responsible for overseeing batching/segment management
-
----
-
-### 3. WebSocket Responses
-
-📮 Use **oneshot** to send responses/status messages back to producers through the WebSocket.
-
-Potential flow:
-
-```text
-Producer
-   ↓
-WebSocket
-   ↓
-Queue
-   ↓
-Single Writer
-   ↓
-Disk
-   ↓
-Write Result
-   ↓
-oneshot
-   ↓
-Producer
-```
-
----
-
-## Current Storage Format
+## Storage Format
 
 Each log record is stored as:
 
 ```text
-[offset][length][payload]
+[offset][length][serialized log]
 ```
 
-The index stores:
+The sparse index stores:
 
 ```text
 [offset][position]
 ```
 
-The index will eventually store entries only at the chosen interval rather than for every log.
+The index is used to find the nearest known position, after which the log file is scanned until the requested offset is found.
 
 ---
 
-## Core Ideas
+## Core Features
 
-* Binary serialization using `bincode`
-* `mpsc` queue for producer → writer communication
-* Single writer for sequential disk writes
-* Batch multiple logs into one contiguous byte buffer
-* Sequential file I/O for performance
-* Sparse indexing for faster log lookup
-* Segments for log storage and retention
-* Eventually: topics/partitions, leadership, replication, and coordination
+* **Single Writer** — keeps disk writes sequential and avoids multiple writers competing for the log.
+* **Batching** — groups 100 logs before writing them to disk.
+* **Append-only Storage** — logs are sequentially appended rather than modified in place.
+* **Sparse Indexing** — stores selected offsets and their file positions for faster lookups.
+* **Segments** — rolls over to a new log file when the current segment reaches its size limit.
+* **Offset-based Consumption** — consumers request logs using their offset.
 
 ---
 
-## Progress
+## Tech Stack
+
+* Rust
+* Tokio
+* WebSockets
+* Serde
+* bincode
+* Tokio `mpsc`
+
+---
+
+## Roadmap
 
 ```text
 [✅] WebSocket producer
-[✅] Producer-side queue
+[✅] Producer queue
 [✅] Single writer
 [✅] Batch writing
-[ ] Consumer
-[ ] Log deserialization/separation
-[ ] Segments
-[ ] Batch management
-[ ] Retention
-[ ] Segment rolling
-[ ] WebSocket responses
+[✅] Sparse indexing
+[✅] Consumer
+[✅] Segments
+[ ] Crash recovery
+[ ] Log retention
+[ ] WebSocket consumer
+[ ] Producer acknowledgements
 [ ] Topics / partitions
-[ ] Coordinator
-[ ] Leadership
+[ ] Consumer groups
 [ ] Replication
+[ ] Leader election
+[ ] Broker coordination
 ```
+
+---
+
+## Long-Term Goal
+
+Evolve Mercury from a single-node append-only log into a **distributed streaming system** with topics, partitions, replication, consumer groups, and fault tolerance.
