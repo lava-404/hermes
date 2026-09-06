@@ -1,4 +1,4 @@
-# mercury: the messenger of gods
+# hermes: the messenger of gods
 
 A personal implementation of a **high-performance append-only log / streaming platform in pure Rust**, inspired by Kafka.
 
@@ -80,4 +80,4 @@ The index is used to find the nearest known position, after which the log file i
 
 ## Long-Term Goal
 
-Evolve Mercury from a single-node append-only log into a **distributed streaming system** with topics, partitions, replication, consumer groups, and fault tolerance.
+Evolve hermes from a single-node append-only log into a **distributed streaming system** with topics, partitions, replication, consumer groups, and fault tolerance.
