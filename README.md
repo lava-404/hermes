@@ -10,6 +10,11 @@ The goal is to understand how log storage, batching, indexing, segmentation, and
 
 ---
 
+## Test
+<img width="1536" height="260" alt="image" src="https://github.com/user-attachments/assets/afec36fc-384d-4579-969d-b82c771b7cdc" />
+
+---
+
 ## Storage Format
 
 Each log record is stored as:
