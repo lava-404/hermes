@@ -6,7 +6,7 @@ The goal is to understand how log storage, batching, indexing, segmentation, and
 
 
 ## Architecture
-<img width="2114" height="744" alt="image" src="https://github.com/user-attachments/assets/a445a34f-72b2-4275-9b9b-2c3afa3da883" />
+<img width="2113" height="744" alt="image" src="https://github.com/user-attachments/assets/af47e5bc-2fec-4b26-8db8-561031261134" />
 
 ---
 
